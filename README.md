@@ -1,247 +1,182 @@
-#!/bin/bash
+# pitching_simulator
 
-# Stop immediately if an error occurs.
-set -e
+3D baseball pitching simulator with gravity, drag, Magnus force, and customizable aerodynamic forces.
 
-# Move to the directory containing this script.
-cd "$(dirname "$0")"
+## 概要
 
+`pitching_simulator` は、野球ボールの投球軌道を3次元空間で数値計算するための Python プログラムです。
 
-# ============================================================
-# Python virtual environment
-# ============================================================
+ボールに働く力として、重力、空気抵抗、マグヌス力を考慮し、運動方程式を数値的に解くことで投球軌道を計算します。
 
-VENV_DIR="./venv"
+また、シーム（縫い目）による空気力など、独自の力を追加できるようにプログラムを構成しています。
 
-# Create virtual environment if it does not exist.
-if [ ! -d "${VENV_DIR}" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv "${VENV_DIR}"
-fi
+## 運動方程式
 
-# Activate virtual environment.
-if [ "${VIRTUAL_ENV:-}" != "$(pwd)/venv" ]; then
-    echo "Activating Python virtual environment..."
-    source "${VENV_DIR}/bin/activate"
-fi
+ボールの運動は、次の運動方程式によって計算します。
 
+$$
+m\frac{d\mathbf{v}}{dt}
+=
+\mathbf{F}_g
++
+\mathbf{F}_D
++
+\mathbf{F}_M
+$$
 
-# ============================================================
-# Install required Python packages
-# ============================================================
+ここで、
 
-echo "Checking Python packages..."
+* $m$ : ボールの質量
+* $\mathbf{v}$ : ボールの速度
+* $\mathbf{F}_g$ : 重力
+* $\mathbf{F}_D$ : 空気抵抗
+* $\mathbf{F}_M$ : マグヌス力
 
-python3 -c "import numpy, matplotlib" 2>/dev/null || \
-    python3 -m pip install numpy matplotlib
+です。
 
+### 重力
 
-# ============================================================
-# Check ffmpeg
-# ============================================================
+重力は
 
-if ! command -v ffmpeg >/dev/null 2>&1; then
-    echo "Error: ffmpeg is required to create the movie."
-    echo
-    echo "On Ubuntu / Debian, install it with:"
-    echo "  sudo apt install ffmpeg"
-    exit 1
-fi
+$$
+\mathbf{F}_g
+=
+\begin{pmatrix}
+0 \\
+0 \\
+-mg
+\end{pmatrix}
+$$
 
+とします。
 
-# ============================================================
-# File settings
-# ============================================================
+### 空気抵抗
 
-PARAM_FILE="./param/parameter.ini"
+空気抵抗は
 
-PITCHING_SCRIPT="./python/pitching.py"
-IMAGE_SCRIPT="./python/image.py"
-MOVIE_SCRIPT="./python/movie.py"
+$$
+\mathbf{F}_D
+=
+-\frac{1}{2}
+\rho C_D A
+|\mathbf{v}|
+\mathbf{v}
+$$
 
-CSV_DIR="./output/csv"
-IMAGE_DIR="./output/image"
-MOVIE_DIR="./output/movie"
+とします。
 
-CSV_FILE="${CSV_DIR}/pitching.csv"
+ここで、
 
-IMAGE_XY="${IMAGE_DIR}/trajectory_xy.png"
-IMAGE_XZ="${IMAGE_DIR}/trajectory_xz.png"
-IMAGE_YZ="${IMAGE_DIR}/trajectory_yz.png"
+* $\rho$ : 空気密度
+* $C_D$ : 抗力係数
+* $A$ : ボールの投影面積
 
-MOVIE_FILE="${MOVIE_DIR}/pitching.mp4"
+です。
 
+### マグヌス力
 
-# ============================================================
-# Check input files
-# ============================================================
+ボールの回転によるマグヌス力は
 
-if [ ! -f "${PARAM_FILE}" ]; then
-    echo "Error: parameter file was not found:"
-    echo "  ${PARAM_FILE}"
-    exit 1
-fi
+$$
+\mathbf{F}_M
+=
+\frac{1}{2}
+\rho C_L A
+|\mathbf{v}|^2
+\left(
+\hat{\boldsymbol{\omega}}
+\times
+\hat{\mathbf{v}}
+\right)
+$$
 
-if [ ! -f "${PITCHING_SCRIPT}" ]; then
-    echo "Error: pitching.py was not found:"
-    echo "  ${PITCHING_SCRIPT}"
-    exit 1
-fi
+とします。
 
-if [ ! -f "${IMAGE_SCRIPT}" ]; then
-    echo "Error: image.py was not found:"
-    echo "  ${IMAGE_SCRIPT}"
-    exit 1
-fi
+ここで、
 
-if [ ! -f "${MOVIE_SCRIPT}" ]; then
-    echo "Error: movie.py was not found:"
-    echo "  ${MOVIE_SCRIPT}"
-    exit 1
-fi
+* $C_L$ : マグヌス力係数
+* $\boldsymbol{\omega}$ : ボールの回転角速度ベクトル
+* $\hat{\boldsymbol{\omega}}$ : 回転軸方向の単位ベクトル
+* $\hat{\mathbf{v}}$ : 速度方向の単位ベクトル
 
+です。
 
-# ============================================================
-# Prepare output directories
-# ============================================================
+## 座標系
 
-mkdir -p "${CSV_DIR}"
-mkdir -p "${IMAGE_DIR}"
-mkdir -p "${MOVIE_DIR}"
+3次元座標は次のように定義します。
 
+* $x$ 軸 : 投手から見た左右方向
+* $y$ 軸 : 投手から捕手へ向かう方向
+* $z$ 軸 : 鉛直上向き
 
-# Remove previous results.
-rm -f "${CSV_FILE}"
-rm -f "${IMAGE_XY}"
-rm -f "${IMAGE_XZ}"
-rm -f "${IMAGE_YZ}"
-rm -f "${MOVIE_FILE}"
+したがって、ボールの位置と速度は
 
+$$
+\mathbf{r}
+=
+(x,y,z)
+$$
 
-# ============================================================
-# STEP 1 / 4
-# Run pitching simulation
-# ============================================================
+$$
+\mathbf{v}
+=
+(v_x,v_y,v_z)
+$$
 
-echo
-echo "============================================================"
-echo "STEP 1 / 4 : Pitching simulation"
-echo "============================================================"
-echo
+で表します。
 
-python3 "${PITCHING_SCRIPT}" "${PARAM_FILE}"
+## 数値計算
 
+運動方程式は4次の Runge-Kutta 法（RK4）を用いて数値積分します。
 
-# ============================================================
-# STEP 2 / 4
-# Check CSV output
-# ============================================================
+各時刻について、
 
-echo
-echo "============================================================"
-echo "STEP 2 / 4 : Check CSV output"
-echo "============================================================"
-echo
+```text
+t, x, y, z, v_x, v_y, v_z, a_x, a_y, a_z
+```
 
-if [ ! -f "${CSV_FILE}" ]; then
-    echo "Error: CSV file was not created:"
-    echo "  ${CSV_FILE}"
-    exit 1
-fi
+を CSV ファイルに出力します。
 
-echo "CSV file:"
-echo "  ${CSV_FILE}"
+## 可視化
 
-# Display the number of data rows.
-NUM_LINES=$(wc -l < "${CSV_FILE}")
+計算された軌道から、次の図を作成します。
 
-# Subtract one line for the CSV header.
-NUM_DATA=$((NUM_LINES - 1))
+* x-y 平面の投球軌道
+* x-z 平面の投球軌道
+* y-z 平面の投球軌道
 
-echo "Number of time steps:"
-echo "  ${NUM_DATA}"
+また、これら3つの投影図と3次元軌道をまとめた動画も作成します。
 
+各グラフでは座標軸の縮尺をそろえ、1 m がどの方向でも同じ長さになるように表示します。
 
-# ============================================================
-# STEP 3 / 4
-# Create trajectory images
-# ============================================================
+## ディレクトリ構成
 
-echo
-echo "============================================================"
-echo "STEP 3 / 4 : Create trajectory images"
-echo "============================================================"
-echo
+```text
+pitching_simulator/
+├── pitching.sh
+├── param/
+│   └── parameter.ini
+├── python/
+│   ├── pitching.py
+│   ├── image.py
+│   └── movie.py
+└── output/
+    ├── csv/
+    ├── image/
+    └── movie/
+```
 
-python3 "${IMAGE_SCRIPT}"
+## 実行方法
 
+```bash
+bash pitching.sh
+```
 
-# Check image files.
-for IMAGE_FILE in \
-    "${IMAGE_XY}" \
-    "${IMAGE_XZ}" \
-    "${IMAGE_YZ}"
-do
-    if [ ! -f "${IMAGE_FILE}" ]; then
-        echo "Error: image file was not created:"
-        echo "  ${IMAGE_FILE}"
-        exit 1
-    fi
-done
+を実行すると、
 
-echo
-echo "Image files:"
-echo "  ${IMAGE_XY}"
-echo "  ${IMAGE_XZ}"
-echo "  ${IMAGE_YZ}"
+1. 投球軌道の数値計算
+2. CSV ファイルの出力
+3. 軌道画像の作成
+4. 投球軌道動画の作成
 
-
-# ============================================================
-# STEP 4 / 4
-# Create movie
-# ============================================================
-
-echo
-echo "============================================================"
-echo "STEP 4 / 4 : Create movie"
-echo "============================================================"
-echo
-
-python3 "${MOVIE_SCRIPT}"
-
-
-# Check movie file.
-if [ ! -f "${MOVIE_FILE}" ]; then
-    echo "Error: movie file was not created:"
-    echo "  ${MOVIE_FILE}"
-    exit 1
-fi
-
-echo
-echo "Movie file:"
-echo "  ${MOVIE_FILE}"
-
-
-# ============================================================
-# Finish
-# ============================================================
-
-echo
-echo "============================================================"
-echo "All processes completed successfully."
-echo "============================================================"
-echo
-
-echo "Outputs:"
-echo
-echo "CSV:"
-echo "  ${CSV_FILE}"
-echo
-echo "Images:"
-echo "  ${IMAGE_XY}"
-echo "  ${IMAGE_XZ}"
-echo "  ${IMAGE_YZ}"
-echo
-echo "Movie:"
-echo "  ${MOVIE_FILE}"
-echo
+を順番に実行します。
